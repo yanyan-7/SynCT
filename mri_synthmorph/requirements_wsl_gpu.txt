@@ -1,0 +1,10 @@
+tensorflow[and-cuda]>=2.17,<2.20
+numpy>=1.26,<2.2
+scipy>=1.13
+nibabel>=5.3
+h5py>=3.11
+scikit-image>=0.24
+packaging>=24
+surfa>=0.6.3
+neurite>=0.2
+pystrum>=0.2

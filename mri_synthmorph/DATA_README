@@ -1,0 +1,80 @@
+原始文件
+1.1 FDG_CT.nii.gz		原始CT图
+1.2 T1.nii			原始T1图
+1.3 mSUV_FDG.nii		原始PET图
+
+=======================================================================================
+
+使用synthmorph_rigid对FDG_CT.nii.gz做刚性配准（参考图为MNI模版图）得到
+2.1 rigidSyn_FDG_CT.nii.gz
+
+使用SPM coregister对T1.nii做刚性配准（参考图为rigidSyn_FDG_CT.nii.gz）得到
+2.2 rSpmT1.nii
+
+使用SPM coregister对mSUV_FDG.nii/mSUV_mk9470.nii做刚性配准（参考图为rigidSyn_FDG_CT.nii.gz）得到
+2.3 rmSUV_FDG.nii/rmSUV_mk9470.nii
+
+使用SPM coregister对mSUV_FDG.nii/mSUV_mk9470.nii做刚性配准（参考图为nrbrain_T1.nii.gz）得到
+rT1mSUV_FDG.nii
+
+=======================================================================================
+
+使用freeSurf对rigidSyn_FDG_CT.nii.gz做头骨剥离得到
+3.1 brain_CT.nii.gz
+
+使用freeSurf对rSpmT1.nii做头骨剥离得到
+3.2 brain_T1.nii.gz
+
+=======================================================================================
+
+使用freeSurf对rSpmT1.nii做灰白质分割得到
+4.1 labels.nii.gz (包含灰质2，白质1，脑脊液3，脑干4）
+4.2 Cortex_label.nii.gz （包含额叶1，颞叶2，顶叶3，枕叶4，皮层下灰质5，insula6, PCC7, 小脑灰质8） 用于评估suvr 的准确性脑区
+4.3 labels_37.nii.gz （从asge.mgz中获得的有较明确意义的37个labels）
+
+=======================================================================================
+
+使用3_affine2min.py进行大小改变
+5.1 rlabels.nii.gz
+5.2 rCortex_label.nii.gz
+5.3 rlabels_37.nii.gz 
+
+=======================================================================================
+
+做归一化
+6.1 nrbrain_CT.nii.gz
+6.2 nrbrain_T1.nii.gz
+6.3 nrigidSyn_FDG_CT.nii.gz
+6.4 nrSpmT1.nii.gz
+
+=======================================================================================
+
+使用mri_synthmorph register joint 命令对nrbrain_CT.nii.gz做空白归一化，得到
+7.1 synthmorph_joint_nrbrain_CT.nii.gz  (CT空间标准化后的图）
+7.2 synthmorph_joint_wrap.nii.gz 形变场
+7.3 synthmorph_joint_rlabels.nii.gz （采用 mri_synthmorph apply 把形变场施加到rlabels.nii.gz后的图）
+7.4 synthmorph_joint_rmSUV_FDG.nii.gz （采用 mri_synthmorph apply 把形变场施加到rmSUV_FDG.nii后的图）
+
+=======================================================================================
+
+使用spm12 对 nrbrain_T1.nii 和 nrbrain_CT.nii 分别做空间归一化（Normalize），获得形变场
+8.1 y_nrbrain_CT.nii
+8.2 y_nrbrain_T1.nii
+再将形变场施加到rmSUV_FDG.nii(或者rmSUV_mk9470.nii) 以及rlabel.nii.gz，再对图像方位改变（3_affine2mni.py）获得
+8.3 rwSpm_CT_rmSUV_FDG.nii.gz   
+8.4 rwSpm_CT_rlabels.nii.gz
+8.5 rwSpm_T1_rmSUV_FDG.nii.gz   rwSpm_T1_rT1mSUV_FDG.nii
+8.6 rwSpm_T1_rlabels.nii.gz
+
+=======================================================================================
+
+对PET图像基于GM算法，做了pve,在spm的petpve12中实施的，输入为rT1mSUV_FDG.nii，GM_WM_label.nii（灰质为2，白质为3），csf信号为0
+pvcrT1mSUV_FDG.nii
+
+对pvcrT1mSUV_FDG.nii图像做基于t1的标准化，得到rwSpm_T1_pvcrT1mSUV_FDG.nii.gz，也做基于ct的 标注化，得到rwSpm_CT_pvcrT1mSUV_FDG.nii.gz，还做基于synthmorph算法的标准化得到synthmorph_joint_fix_quatern_c_rpvcrT1mSUV_FDG.nii.gz（在这里因为，pvcrT1mSUV_FDG.nii图像的quater_c和quater_d与形变场synthmorph_joint_wrap.nii.gz正负一致，反而不行，这里需要把它改成相反才可以。）
+
+
+训练用到的数据
+7.1 CT_T1.npz		vol.npy代表nrbrain_CT.nii.gz，t1代表nrbrain_T1.nii.gz
+7.2 CT_T1_label.npz	vol.npy代表nrbrain_CT.nii.gz，t1代表nrbrain_T1.nii.gz，label.npy代表rlabels.nii.gz
+7.3 CT_T1_label37.npz  vol.npy代表nrbrain_CT.nii.gz，t1代表nrbrain_T1.nii.gz，label.npy代表rlabels_37.nii.gz

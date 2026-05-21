@@ -1,0 +1,24 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# OS and editor metadata
+.DS_Store
+.idea/
+.vscode/
+
+# Generated data, local test images, and temporary outputs
+tmp_data/
+test_data/
+mri_synthmorph/data/
+
+# Local backups
+*.bak
+
+# Large model/checkpoint files
+*.h5
+*.pt
+*.pth
+*.ckpt
