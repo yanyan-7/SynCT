@@ -146,6 +146,26 @@ class SynCTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             combo.setCurrentIndex(values.index(current))
         return combo
 
+    def _fwhmControls(self, default=(6.0, 6.0, 6.0)):
+        row = qt.QWidget()
+        rowLayout = qt.QHBoxLayout(row)
+        rowLayout.setContentsMargins(0, 0, 0, 0)
+        rowLayout.setSpacing(6)
+        spins = []
+        for axis, value in zip(("X", "Y", "Z"), default):
+            label = qt.QLabel(axis)
+            spin = qt.QDoubleSpinBox()
+            spin.setRange(0.0, 50.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.5)
+            spin.setSuffix(" mm")
+            spin.setValue(float(value))
+            rowLayout.addWidget(label)
+            rowLayout.addWidget(spin)
+            spins.append(spin)
+        rowLayout.addStretch(1)
+        return spins, row
+
     def _button(self, text, callback, tooltip=""):
         button = qt.QPushButton(text)
         button.setToolTip(tooltip)
@@ -380,6 +400,15 @@ class SynCTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.suvrPetSelector = self._nodeSelector()
         form.addRow("PET/SUV input", self.suvrPetSelector)
+        self.suvrSmoothCheck = qt.QCheckBox("Smooth PET before SUVR")
+        self.suvrSmoothCheck.setChecked(True)
+        form.addRow("", self.suvrSmoothCheck)
+        self.suvrSmoothFwhmSpins, row = self._fwhmControls()
+        form.addRow("Smoothing FWHM X/Y/Z", row)
+        self.suvrSmoothOutputNameEdit = self._lineEdit("PET_smoothed_6mm")
+        form.addRow("Smoothed PET output", self.suvrSmoothOutputNameEdit)
+        self.suvrSmoothSavePathEdit, row = self._pathInput("save", "Save smoothed PET", "NIfTI (*.nii *.nii.gz);;All files (*)")
+        form.addRow("Optional smoothed PET save path", row)
         self.suvrReferenceSelector = self._nodeSelector()
         form.addRow("Reference mask", self.suvrReferenceSelector)
         self.suvrOutputNameEdit = self._lineEdit("SUVR")
@@ -497,6 +526,14 @@ class SynCTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.gaainMniPetNameEdit = self._lineEdit("AV45_PET_MNI_BSpline.nii.gz")
         form.addRow("MNI PET output filename", self.gaainMniPetNameEdit)
+
+        self.gaainSmoothCheck = qt.QCheckBox("Smooth MNI PET before SUVR")
+        self.gaainSmoothCheck.setChecked(True)
+        form.addRow("", self.gaainSmoothCheck)
+        self.gaainSmoothFwhmSpins, row = self._fwhmControls()
+        form.addRow("Smoothing FWHM X/Y/Z", row)
+        self.gaainSmoothPetNameEdit = self._lineEdit("AV45_PET_MNI_BSpline_smooth6mm.nii.gz")
+        form.addRow("Smoothed MNI PET filename", self.gaainSmoothPetNameEdit)
 
         self.gaainRegistrationCombo = self._combo(["joint", "affine", "rigid", "deform"], "joint")
         form.addRow("CT to MNI SynthMorph model", self.gaainRegistrationCombo)
@@ -712,6 +749,10 @@ class SynCTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 referenceMaskNode=self._requiredNode(self.suvrReferenceSelector, "reference mask"),
                 outputName=self._text(self.suvrOutputNameEdit),
                 savePath=self._optionalPath(self.suvrSavePathEdit),
+                smoothBefore=self._checked(self.suvrSmoothCheck),
+                smoothingFwhmMm=tuple(float(self._value(spin)) for spin in self.suvrSmoothFwhmSpins),
+                smoothedOutputName=self._text(self.suvrSmoothOutputNameEdit),
+                smoothedSavePath=self._optionalPath(self.suvrSmoothSavePathEdit),
                 progressCallback=self.report,
             )
             self.roiImageSelector.setCurrentNode(node)
@@ -793,6 +834,9 @@ class SynCTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 mniPetFilename=self._text(self.gaainMniPetNameEdit),
                 registrationMode=self._comboText(self.gaainRegistrationCombo),
                 samplingPercentage=float(self._value(self.gaainSamplingSpin)),
+                smoothBeforeSUVR=self._checked(self.gaainSmoothCheck),
+                smoothingFwhmMm=tuple(float(self._value(spin)) for spin in self.gaainSmoothFwhmSpins),
+                smoothedPetFilename=self._text(self.gaainSmoothPetNameEdit),
                 useGpu=self._checked(self.gaainUseGpuCheck),
                 synthBackend=self._comboText(self.gaainSynthBackendCombo),
                 wslDistro=self._text(self.gaainWslDistroEdit),
@@ -1642,12 +1686,114 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
         raise RuntimeError("Could not locate PythonSlicer executable.")
 
     # ------------------------------------------------------------------
+    # Smoothing
+
+    def _normalizeFwhmMm(self, fwhmMm):
+        if fwhmMm is None:
+            values = (6.0, 6.0, 6.0)
+        elif isinstance(fwhmMm, (int, float)):
+            values = (float(fwhmMm),) * 3
+        elif isinstance(fwhmMm, str):
+            parts = fwhmMm.replace("x", ",").replace("*", ",").replace(";", ",").split(",")
+            values = tuple(float(part.strip()) for part in parts if part.strip())
+        else:
+            values = tuple(float(value) for value in fwhmMm)
+        if len(values) != 3:
+            raise ValueError("Smoothing FWHM must contain three values: X, Y, and Z in mm.")
+        if any(value < 0 for value in values):
+            raise ValueError("Smoothing FWHM values must be non-negative.")
+        return values
+
+    def _fwhmText(self, fwhmMm):
+        fwhmMm = self._normalizeFwhmMm(fwhmMm)
+        return "x".join(f"{value:g}" for value in fwhmMm)
+
+    def _sigmaVoxelsFromFwhm(self, fwhmMm, spacing):
+        fwhmMm = self._normalizeFwhmMm(fwhmMm)
+        sigmaFactor = math.sqrt(8.0 * math.log(2.0))
+        sigmas = []
+        for fwhm, voxelSize in zip(fwhmMm, spacing):
+            voxelSize = abs(float(voxelSize))
+            sigmas.append(0.0 if fwhm <= 0 else float(fwhm) / sigmaFactor / max(voxelSize, 1e-6))
+        return tuple(sigmas)
+
+    def gaussianSmoothVolume(self, inputNode, fwhmMm, outputName, savePath=None, progressCallback=None):
+        try:
+            from scipy.ndimage import gaussian_filter
+        except Exception as exc:
+            raise RuntimeError("scipy is required for Gaussian smoothing.") from exc
+
+        fwhmMm = self._normalizeFwhmMm(fwhmMm)
+        self._progress(progressCallback, 35, f"Gaussian smoothing PET with FWHM {self._fwhmText(fwhmMm)} mm")
+        array = slicer.util.arrayFromVolume(inputNode).astype("float32")
+        sigmaXyz = self._sigmaVoxelsFromFwhm(fwhmMm, inputNode.GetSpacing())
+        sigmaKji = (sigmaXyz[2], sigmaXyz[1], sigmaXyz[0])
+        if max(sigmaKji) > 0:
+            smoothed = gaussian_filter(array, sigma=sigmaKji, mode="nearest")
+        else:
+            smoothed = array.copy()
+        outputNode = self._newVolumeLike(inputNode, smoothed.astype("float32"), outputName or "PET_smoothed")
+        self._saveNode(outputNode, savePath)
+        self._showVolume(outputNode)
+        return outputNode
+
+    def gaussianSmoothVolumeFile(self, inputPath, outputPath, fwhmMm):
+        try:
+            from scipy.ndimage import gaussian_filter
+        except Exception as exc:
+            raise RuntimeError("scipy is required for Gaussian smoothing.") from exc
+
+        fwhmMm = self._normalizeFwhmMm(fwhmMm)
+        nib = self._nib()
+        image = nib.load(str(inputPath))
+        data = image.get_fdata(dtype="float32")
+        zooms = image.header.get_zooms()[:3]
+        sigmaXyz = self._sigmaVoxelsFromFwhm(fwhmMm, zooms)
+        if data.ndim > 3:
+            sigma = tuple(sigmaXyz) + (0.0,) * (data.ndim - 3)
+        else:
+            sigma = sigmaXyz
+        if max(sigma) > 0:
+            smoothed = gaussian_filter(data, sigma=sigma, mode="nearest")
+        else:
+            smoothed = data.copy()
+        outputPath = self._ensureOutputFile(outputPath)
+        header = image.header.copy()
+        header.set_data_dtype("float32")
+        outputImage = nib.Nifti1Image(smoothed.astype("float32"), image.affine, header=header)
+        outputImage.set_sform(image.affine, code=int(image.header["sform_code"]) or 1)
+        outputImage.set_qform(image.affine, code=int(image.header["qform_code"]) or 1)
+        nib.save(outputImage, str(outputPath))
+        return str(outputPath)
+
+    # ------------------------------------------------------------------
     # Quantification
 
-    def createSUVRImage(self, petNode, referenceMaskNode, outputName, savePath=None, progressCallback=None):
-        referenceMaskNode, temporary = self._matchingLabelNode(referenceMaskNode, petNode, progressCallback)
+    def createSUVRImage(
+        self,
+        petNode,
+        referenceMaskNode,
+        outputName,
+        savePath=None,
+        smoothBefore=False,
+        smoothingFwhmMm=(6.0, 6.0, 6.0),
+        smoothedOutputName=None,
+        smoothedSavePath=None,
+        progressCallback=None,
+    ):
+        suvrInputNode = petNode
+        smoothingFwhmMm = self._normalizeFwhmMm(smoothingFwhmMm)
+        if smoothBefore:
+            suvrInputNode = self.gaussianSmoothVolume(
+                petNode,
+                smoothingFwhmMm,
+                smoothedOutputName or f"{petNode.GetName()}_smooth{self._fwhmText(smoothingFwhmMm)}mm",
+                savePath=smoothedSavePath,
+                progressCallback=progressCallback,
+            )
+        referenceMaskNode, temporary = self._matchingLabelNode(referenceMaskNode, suvrInputNode, progressCallback)
         try:
-            petArray = slicer.util.arrayFromVolume(petNode).astype("float32")
+            petArray = slicer.util.arrayFromVolume(suvrInputNode).astype("float32")
             maskArray = slicer.util.arrayFromVolume(referenceMaskNode)
             referenceValues = petArray[maskArray > 0]
             referenceValues = referenceValues[~self._np().isnan(referenceValues)]
@@ -1663,6 +1809,8 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
             info = {
                 "Metric": "SUVR image",
                 "Output": outputNode.GetName(),
+                "SUVRInput": suvrInputNode.GetName(),
+                "SmoothingFWHM_mm": self._fwhmText(smoothingFwhmMm) if smoothBefore else "",
                 "ReferenceMean": referenceMean,
                 "ReferenceVoxelCount": int(referenceValues.size),
                 "SavedPath": savedPath or "",
@@ -1685,6 +1833,9 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
         mniPetFilename="AV45_PET_MNI_BSpline.nii.gz",
         registrationMode="Rigid+Affine",
         samplingPercentage=0.02,
+        smoothBeforeSUVR=True,
+        smoothingFwhmMm=(6.0, 6.0, 6.0),
+        smoothedPetFilename="AV45_PET_MNI_BSpline_smooth6mm.nii.gz",
         useGpu=True,
         synthBackend="Slicer Python",
         wslDistro="Ubuntu",
@@ -1724,6 +1875,9 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
         if not saveDeformationField:
             transformPath = outputDir / ".SynCT_temp_CT_to_MNI_deformation.nii.gz"
         mniPetPath = outputDir / (mniPetFilename or "AV45_PET_MNI_BSpline.nii.gz")
+        smoothingFwhmMm = self._normalizeFwhmMm(smoothingFwhmMm)
+        smoothedPetPath = outputDir / (smoothedPetFilename or "AV45_PET_MNI_BSpline_smooth6mm.nii.gz")
+        suvrInputPetPath = smoothedPetPath if smoothBeforeSUVR else mniPetPath
         cerebellumInPetPath = outputDir / "GAAIN_cerebellumGM_in_AV45_template.nii.gz"
         ctxInPetPath = outputDir / "GAAIN_ctx_in_AV45_template.nii.gz"
         suvrPath = outputDir / "AV45_SUVR_GAAIN_cerebellumGM.nii.gz"
@@ -1810,9 +1964,14 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
                 progressCallback=progressCallback,
             )
 
+            if smoothBeforeSUVR:
+                self._progress(progressCallback, 80, f"Gaussian smoothing MNI PET with FWHM {self._fwhmText(smoothingFwhmMm)} mm")
+                self.gaussianSmoothVolumeFile(mniPetPath, smoothedPetPath, smoothingFwhmMm)
+                self._loadVolumeFromFile(smoothedPetPath, self._niftiStem(smoothedPetPath, "AV45_PET_MNI_smoothed"))
+
             self._progress(progressCallback, 82, "Saving GAAIN masks in MNI PET geometry")
-            self._saveLabelImageInReferenceFile(cerebellumMaskPath, mniPetPath, cerebellumInPetPath)
-            self._saveLabelImageInReferenceFile(ctxMaskPath, mniPetPath, ctxInPetPath)
+            self._saveLabelImageInReferenceFile(cerebellumMaskPath, suvrInputPetPath, cerebellumInPetPath)
+            self._saveLabelImageInReferenceFile(ctxMaskPath, suvrInputPetPath, ctxInPetPath)
             cerebellumInPetNode = self._loadVolumeFromFile(
                 cerebellumInPetPath,
                 self._nodeName("GAAIN_cerebellumGM_in_AV45_template", "GAAIN_cerebellumGM"),
@@ -1822,9 +1981,9 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
                 self._nodeName("GAAIN_ctx_in_AV45_template", "GAAIN_ctx"),
             )
 
-            self._progress(progressCallback, 88, "Creating SUVR image directly from MNI PET and cerebellum reference")
+            self._progress(progressCallback, 88, "Creating SUVR image from MNI PET and cerebellum reference")
             suvrInfo = self.createSUVRImageFileWithInfo(
-                mniPetPath,
+                suvrInputPetPath,
                 cerebellumInPetPath,
                 suvrPath,
             )
@@ -1871,6 +2030,10 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
             row["MaskInterpolation"] = "NearestNeighbor"
             row["SynthMorphGPURequested"] = bool(useGpu)
             row["SUVRImage"] = str(suvrPath)
+            row["SUVRInputPET"] = str(suvrInputPetPath)
+            row["SmoothedMNI_PET"] = str(smoothedPetPath) if smoothBeforeSUVR else ""
+            row["SmoothingFWHM_mm"] = self._fwhmText(smoothingFwhmMm) if smoothBeforeSUVR else ""
+            row["CL"] = self._centiloidFromSUVR(row.get("SUVR_Mean"))
             row["MNI_PET"] = str(mniPetPath)
             row["MNI_CT"] = str(ctToTemplatePath)
             row["PETRigidToCT"] = str(petRigidPath)
@@ -1900,6 +2063,16 @@ class SynCTLogic(ScriptedLoadableModuleLogic):
             "SUVR_Max": float(values.max()) if values.size else float("nan"),
             "ReferenceMean": float(referenceMean),
         }
+
+    def _centiloidFromSUVR(self, suvrValue):
+        np = self._np()
+        try:
+            value = float(suvrValue)
+        except (TypeError, ValueError):
+            return float("nan")
+        if not np.isfinite(value):
+            return float("nan")
+        return 175.0 * value - 182.0
 
     def _suvrROIOutputRow(self, row, referenceMean):
         return {
