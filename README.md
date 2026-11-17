@@ -13,6 +13,26 @@ SynCT is a 3D Slicer scripted module for CT-guided PET spatial normalization and
 5. Use the default `joint` model and `6 x 6 x 6 mm` Gaussian smoothing. Configure the SynthMorph backend, click `Check GAAIN SynthMorph backend`, then `Run GAAIN AV45 SUVR`.
 6. Inspect the normalized PET, smoothed PET, SUVR image, and `AV45_GAAIN_ctx_SUVR.csv` in the output directory. Check image and mask alignment in Slicer before interpreting the values. The CSV includes `CL = 175 * SUVR_Mean - 182`.
 
+## Real 3D Slicer demonstrations
+
+These two English-language, silent videos use **different subjects** and show CT-guided spatial normalization through 6 mm FWHM Gaussian smoothing. They do not demonstrate the AV45-specific SUVR or CL calculation. No source DICOM or processed patient image files are included in this repository.
+
+| Video | Backend | What it shows |
+| --- | --- | --- |
+| [FDG PET/CT CPU demo](docs/FDG_CPU_Slicer_demo.avi) | CPU | A captioned, step-by-step sequence of screenshots from an actual 3D Slicer run. This is not a continuous screen recording. |
+| [CIT PET/CT WSL GPU demo](docs/CIT_WSL_GPU_Slicer_demo.avi) | WSL GPU | A continuous recording of the actual Slicer window, including a visible cursor indicator. Processing is driven by Slicer automation rather than manual button clicks. |
+
+To follow either video with your **own** PET/CT pair in `PET Quantification > SynCT`:
+
+1. Use `1. DICOM import` to convert CT and PET to NIfTI, or load existing NIfTI volumes with `File > Add Data`. Confirm PET and CT belong to the same examination.
+2. In `3. Registration`, set native CT as `Fixed/reference` and PET as `Moving/input`; click `Run rigid registration`.
+3. In `2. Preprocess`, run CT skull stripping, clip the brain CT to HU `[0, 80]`, and apply the CT brain mask to the registered PET.
+4. In `3. Registration`, set the clipped CT as `SynthMorph moving` and the MNI template as `SynthMorph fixed`. Select `joint`, choose `Slicer Python`/CPU or `WSL GPU` as appropriate, check the backend, and click `Run SynthMorph`. The GPU device shown in the CIT recording (`CUDA_VISIBLE_DEVICES=0`) is specific to that computer; check your own device mapping.
+5. Still in `3. Registration`, apply the saved CT-to-template SynthMorph transform to the masked PET using B-spline interpolation.
+6. In `4. PET quantification`, select the normalized PET and enable `Smooth PET before SUVR` with `6/6/6 mm` FWHM. Supply a reference mask to create an SUVR image, or inspect the spatially normalized and smoothed PET separately as shown in the videos. Verify PET/template alignment before quantitative interpretation.
+
+The [illustrated quick-start video](docs/SynCT_quick_start.avi) remains available for an overview. AVI playback may require a local video player or download from GitHub.
+
 ## Processing workflow
 
 ```mermaid
