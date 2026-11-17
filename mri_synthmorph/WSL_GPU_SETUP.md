@@ -123,12 +123,19 @@ PY
 
 The GPU list must not be empty.
 
-From Windows PowerShell, use single quotes around the Linux command to avoid
-nested quoting errors:
+From Windows PowerShell, check the actual device selected by TensorFlow and
+run a small computation before starting a registration:
 
 ```powershell
-wsl -d Ubuntu -- bash -lc 'export CUDA_VISIBLE_DEVICES=1; /root/envs/synthmorph-gpu/bin/python -c "import tensorflow as tf; print(tf.config.list_physical_devices(chr(71)+chr(80)+chr(85)))"'
+wsl -d Ubuntu -- env CUDA_VISIBLE_DEVICES=0 /root/envs/synthmorph-gpu/bin/python -c 'import tensorflow as tf; g=tf.config.list_physical_devices(chr(71)+chr(80)+chr(85)); print(tf.config.experimental.get_device_details(g[0])); print(tf.reduce_sum(tf.ones([64,64])).numpy())'
 ```
+
+The output should identify the intended GPU and end with `4096.0`. On this
+workstation, `CUDA_VISIBLE_DEVICES=0` selected the RTX 4090, while `1`
+selected the RTX 5090 in TensorFlow (checked on 2026-11-17). This differed
+from the ordering printed by `nvidia-smi`, so verify the TensorFlow device
+name instead of inferring it from the `nvidia-smi` index. A successful small
+operation does not guarantee that the full SynthMorph registration will run.
 
 If your distribution name is different, replace `Ubuntu` with the exact name
 shown by `wsl -l -v`.
@@ -136,8 +143,8 @@ shown by `wsl -l -v`.
 Messages such as `Unable to register cuDNN factory` are TensorFlow startup
 warnings and are not fatal if the GPU list is shown. If TensorFlow reports that
 compute capability 12.0 kernels will be JIT-compiled, it is usually referring
-to an RTX 50-series GPU. Prefer `CUDA_VISIBLE_DEVICES=1` to use the RTX 4090 on
-this workstation and avoid the long first-run JIT compile on the RTX 5090.
+to an RTX 50-series GPU. On this workstation, use `CUDA_VISIBLE_DEVICES=0`
+for the RTX 4090 to avoid the RTX 5090's first-run JIT compilation.
 
 Some neurite/voxelmorph releases still import Keras 2 names such as
 `mean_absolute_error`. SynCT patches these aliases at SynthMorph startup so the
@@ -152,6 +159,6 @@ In the SynCT module:
   name shown by `wsl -l -v`, usually `Ubuntu`.
 - Set `WSL Python` to `$HOME/envs/synthmorph-gpu/bin/python`, or to
   `/root/envs/synthmorph-gpu/bin/python` if the setup was run as `root`.
-- Set `CUDA_VISIBLE_DEVICES` to `1` to prefer the RTX 4090 on this workstation, or `0` for the RTX 5090.
+- Set `CUDA_VISIBLE_DEVICES` to `0` to select the RTX 4090 on this workstation, or `1` for the RTX 5090. Confirm the mapping with the TensorFlow test above.
 
 SynCT automatically converts Windows paths such as `D:\...` to WSL paths such as `/mnt/d/...`.
